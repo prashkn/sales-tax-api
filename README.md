@@ -4,13 +4,6 @@ A JSON API that returns jurisdiction-level US sales tax rates for any ZIP code o
 
 This is a rate lookup service only — not tax advice, filing, or exemption handling.
 
-## Tech Stack
-
-- **API server:** Go (chi router, pgx, go-redis)
-- **Database:** PostgreSQL (source of truth)
-- **Cache:** Redis (24-hour TTL)
-- **Data pipeline:** Python (pandas, quarterly batch updates)
-
 ## API Endpoints
 
 All endpoints return JSON. Authenticated routes require an API key.
