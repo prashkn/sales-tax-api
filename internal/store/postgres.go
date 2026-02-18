@@ -33,7 +33,12 @@ func (s *Store) Ping(ctx context.Context) error {
 }
 
 func (s *Store) GetJurisdictionsByZIP(ctx context.Context, zip string) ([]Jurisdiction, error) {
-	rows, err := s.pool.Query(ctx, queryJurisdictionsByZIP, zip)
+	query, args, err := jurisdictionsByZIPQuery(zip).ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("building query: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying jurisdictions: %w", err)
 	}
@@ -51,12 +56,40 @@ func (s *Store) GetJurisdictionsByZIP(ctx context.Context, zip string) ([]Jurisd
 }
 
 func (s *Store) GetRateByFIPS(ctx context.Context, fipsCode string) (*Rate, error) {
+	query, args, err := rateByFIPSQuery(fipsCode).ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("building query: %w", err)
+	}
+
 	var r Rate
-	err := s.pool.QueryRow(ctx, queryRateByFIPS, fipsCode).Scan(
+	err = s.pool.QueryRow(ctx, query, args...).Scan(
 		&r.ID, &r.FIPSCode, &r.Rate, &r.RateType, &r.EffectiveDate, &r.ExpiryDate, &r.Source,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying rate: %w", err)
 	}
 	return &r, nil
+}
+
+func (s *Store) GetRatesByFIPSCodes(ctx context.Context, fipsCodes []string) ([]Rate, error) {
+	query, args, err := ratesByFIPSCodesQuery(fipsCodes).ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("building query: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying rates: %w", err)
+	}
+	defer rows.Close()
+
+	var rates []Rate
+	for rows.Next() {
+		var r Rate
+		if err := rows.Scan(&r.ID, &r.FIPSCode, &r.Rate, &r.RateType, &r.EffectiveDate, &r.ExpiryDate, &r.Source); err != nil {
+			return nil, fmt.Errorf("scanning rate: %w", err)
+		}
+		rates = append(rates, r)
+	}
+	return rates, rows.Err()
 }
