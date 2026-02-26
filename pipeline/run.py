@@ -97,7 +97,7 @@ def _run_parse() -> None:
     logger.info("STAGE: PARSE")
     logger.info("=" * 60)
 
-    from parse import merge_sources, parse_avalara, parse_sst
+    from parse import merge_sources, parse_avalara, parse_sst, parse_state_gov
 
     downloaded = _state.get("downloaded_files")
     if not downloaded:
@@ -135,8 +135,10 @@ def _run_parse() -> None:
         logger.info("Parsing %d Avalara files", len(avalara_files))
         sources["avalara"] = parse_avalara(avalara_files)
 
-    # Note: state_gov files reuse the avalara parser structure for now.
-    # Individual state parsers can be added as needed.
+    state_gov_files = downloaded.get("state_gov", [])
+    if state_gov_files:
+        logger.info("Parsing %d state_gov files", len(state_gov_files))
+        sources["state_gov"] = parse_state_gov(state_gov_files)
 
     # Merge across sources with priority.
     jurisdictions, rates, zips = merge_sources(sources, SOURCE_PRIORITY)

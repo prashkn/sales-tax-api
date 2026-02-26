@@ -12,6 +12,9 @@ import pandas as pd
 
 from config import SST_STATES, current_quarter
 
+# Set of state FIPS codes covered by SST (used to avoid Avalara overlap).
+_SST_STATE_FIPS = set(SST_STATES.values())
+
 logger = logging.getLogger(__name__)
 
 # Effective date used for newly ingested records this quarter.
@@ -192,9 +195,22 @@ def parse_avalara(files: list[Path]) -> tuple[pd.DataFrame, pd.DataFrame, pd.Dat
       State, ZipCode, TaxRegionName, TaxRegionCode,
       EstimatedCombinedRate, EstimatedStateRate, EstimatedCountyRate,
       EstimatedCityRate, EstimatedSpecialRate
+
+    Approach:
+      - State-level jurisdictions use real state FIPS codes.
+      - Sub-state rates (county + city + special) are combined into a single
+        synthetic "local" jurisdiction per ZIP, since Avalara doesn't provide
+        real FIPS codes for sub-state jurisdictions.  The synthetic FIPS format
+        is ``AVL{state_fips}{zip}`` (e.g., ``AVL0690210``), clearly marking
+        them as Avalara-sourced so they don't collide with real FIPS codes
+        from SST.
+      - Uses vectorized pandas operations instead of row-by-row iteration.
     """
     if not files:
         return _empty_jurisdictions(), _empty_rates(), _empty_zip_junctions()
+
+    # Build lookup: state abbreviation → FIPS code (computed once).
+    state_abbr_to_fips = _STATE_TO_FIPS
 
     all_jurisdictions = []
     all_rates = []
@@ -212,7 +228,6 @@ def parse_avalara(files: list[Path]) -> tuple[pd.DataFrame, pd.DataFrame, pd.Dat
         zip_col = _find_col(df, ["zipcode", "zip_code", "zip"])
         state_col = _find_col(df, ["state", "state_abbreviation"])
         name_col = _find_col(df, ["taxregionname", "tax_region_name", "jurisdiction"])
-        code_col = _find_col(df, ["taxregioncode", "tax_region_code"])
 
         # Rate columns
         state_rate_col = _find_col(df, ["estimatedstaterate", "estimated_state_rate", "state_rate"])
@@ -224,94 +239,263 @@ def parse_avalara(files: list[Path]) -> tuple[pd.DataFrame, pd.DataFrame, pd.Dat
             logger.warning("Avalara file %s missing ZIP column, skipping", path)
             continue
 
-        # State FIPS lookup table
-        state_abbr_to_fips = {v: k for k, v in _STATE_FIPS.items()}
+        # --- Vectorized pre-processing ---
+        df["_zip"] = df[zip_col].str.strip().str[:5]
+        df = df[df["_zip"].str.len() == 5].copy()
 
-        for _, row in df.iterrows():
-            zip_code = str(row.get(zip_col, "")).strip()[:5]
-            if not zip_code or len(zip_code) != 5:
-                continue
+        if state_col:
+            df["_state_abbr"] = df[state_col].str.strip()
+            df["_state_fips"] = df["_state_abbr"].map(state_abbr_to_fips).fillna("")
+        else:
+            df["_state_abbr"] = ""
+            df["_state_fips"] = ""
 
-            state_abbr = str(row.get(state_col, "")).strip() if state_col else ""
-            state_fips = state_abbr_to_fips.get(state_abbr, "")
-            region_name = str(row.get(name_col, "")).strip() if name_col else ""
-            region_code = str(row.get(code_col, "")).strip() if code_col else ""
+        if name_col:
+            df["_region_name"] = df[name_col].str.strip()
+        else:
+            df["_region_name"] = ""
 
-            # Use the region code as a FIPS-like identifier, or construct one.
-            fips = region_code if region_code else f"{state_fips}Z{zip_code}"
+        # --- State-level jurisdictions (real FIPS, deduplicated later) ---
+        states_with_fips = df[df["_state_fips"] != ""].drop_duplicates(subset=["_state_fips"])
+        if not states_with_fips.empty:
+            state_j = pd.DataFrame({
+                "fips_code": states_with_fips["_state_fips"].values,
+                "name": states_with_fips["_state_abbr"].values,
+                "type": "state",
+                "state_fips": states_with_fips["_state_fips"].values,
+                "parent_fips": None,
+                "effective_date": _EFFECTIVE_DATE,
+            })
+            all_jurisdictions.append(state_j)
 
-            # Build a state-level jurisdiction (deduplicated later).
-            if state_fips:
-                all_jurisdictions.append({
-                    "fips_code": state_fips,
-                    "name": state_abbr,
-                    "type": "state",
-                    "state_fips": state_fips,
-                    "parent_fips": None,
-                    "effective_date": _EFFECTIVE_DATE,
-                })
-
-                if state_rate_col:
-                    rate_val = _safe_float(row.get(state_rate_col))
-                    all_rates.append({
-                        "fips_code": state_fips,
-                        "rate": rate_val,
-                        "rate_type": "general",
-                        "effective_date": _EFFECTIVE_DATE,
-                        "expiry_date": None,
-                        "source": "avalara",
-                    })
-
-                all_zips.append({
-                    "zip_code": zip_code,
-                    "fips_code": state_fips,
-                    "is_primary": True,
-                    "effective_date": _EFFECTIVE_DATE,
-                    "expiry_date": None,
-                })
-
-            # County, city, special — build combined jurisdiction rows.
-            for rate_col_name, jur_type, suffix in [
-                (county_rate_col, "county", "C"),
-                (city_rate_col, "city", "I"),
-                (special_rate_col, "special_district", "S"),
-            ]:
-                if not rate_col_name:
-                    continue
-                rate_val = _safe_float(row.get(rate_col_name))
-                if rate_val <= 0:
-                    continue
-
-                sub_fips = f"{state_fips}{suffix}{zip_code}"
-                all_jurisdictions.append({
-                    "fips_code": sub_fips,
-                    "name": f"{region_name} ({jur_type})",
-                    "type": jur_type,
-                    "state_fips": state_fips,
-                    "parent_fips": state_fips,
-                    "effective_date": _EFFECTIVE_DATE,
-                })
-                all_rates.append({
-                    "fips_code": sub_fips,
-                    "rate": rate_val,
+            if state_rate_col:
+                state_rates_df = states_with_fips.copy()
+                state_rates_df["_rate"] = pd.to_numeric(state_rates_df[state_rate_col], errors="coerce").fillna(0)
+                state_r = pd.DataFrame({
+                    "fips_code": state_rates_df["_state_fips"].values,
+                    "rate": state_rates_df["_rate"].values,
                     "rate_type": "general",
                     "effective_date": _EFFECTIVE_DATE,
                     "expiry_date": None,
                     "source": "avalara",
                 })
-                all_zips.append({
-                    "zip_code": zip_code,
-                    "fips_code": sub_fips,
+                all_rates.append(state_r)
+
+        # --- ZIP → state mappings ---
+        zip_state = df[df["_state_fips"] != ""][["_zip", "_state_fips"]].drop_duplicates()
+        if not zip_state.empty:
+            state_z = pd.DataFrame({
+                "zip_code": zip_state["_zip"].values,
+                "fips_code": zip_state["_state_fips"].values,
+                "is_primary": True,
+                "effective_date": _EFFECTIVE_DATE,
+                "expiry_date": None,
+            })
+            all_zips.append(state_z)
+
+        # --- Local (sub-state) rates as a single combined jurisdiction per ZIP ---
+        # Sum county + city + special into one "local" rate.  This avoids
+        # synthesizing multiple fake FIPS codes that collide with real ones.
+        local_rate_cols = [c for c in [county_rate_col, city_rate_col, special_rate_col] if c]
+        if local_rate_cols:
+            local = df[df["_state_fips"] != ""].copy()
+            local["_local_rate"] = 0.0
+            for col in local_rate_cols:
+                local["_local_rate"] += pd.to_numeric(local[col], errors="coerce").fillna(0)
+
+            # Only keep rows where the local rate is non-zero.
+            local = local[local["_local_rate"] > 0]
+
+            if not local.empty:
+                # Deduplicate per ZIP (take first row per ZIP).
+                local = local.drop_duplicates(subset=["_zip"])
+                local["_local_fips"] = "AVL" + local["_state_fips"] + local["_zip"]
+
+                local_j = pd.DataFrame({
+                    "fips_code": local["_local_fips"].values,
+                    "name": local["_region_name"].values + " (local)",
+                    "type": "county",  # closest match for combined local rate
+                    "state_fips": local["_state_fips"].values,
+                    "parent_fips": local["_state_fips"].values,
+                    "effective_date": _EFFECTIVE_DATE,
+                })
+                all_jurisdictions.append(local_j)
+
+                local_r = pd.DataFrame({
+                    "fips_code": local["_local_fips"].values,
+                    "rate": local["_local_rate"].values,
+                    "rate_type": "general",
+                    "effective_date": _EFFECTIVE_DATE,
+                    "expiry_date": None,
+                    "source": "avalara",
+                })
+                all_rates.append(local_r)
+
+                local_z = pd.DataFrame({
+                    "zip_code": local["_zip"].values,
+                    "fips_code": local["_local_fips"].values,
                     "is_primary": True,
                     "effective_date": _EFFECTIVE_DATE,
                     "expiry_date": None,
                 })
+                all_zips.append(local_z)
 
-    jurisdictions_df = pd.DataFrame(all_jurisdictions) if all_jurisdictions else _empty_jurisdictions()
-    rates_df = pd.DataFrame(all_rates) if all_rates else _empty_rates()
-    zips_df = pd.DataFrame(all_zips) if all_zips else _empty_zip_junctions()
+    jurisdictions_df = pd.concat(all_jurisdictions, ignore_index=True) if all_jurisdictions else _empty_jurisdictions()
+    rates_df = pd.concat(all_rates, ignore_index=True) if all_rates else _empty_rates()
+    zips_df = pd.concat(all_zips, ignore_index=True) if all_zips else _empty_zip_junctions()
 
-    # Deduplicate — keep first occurrence per FIPS code.
+    # Deduplicate.
+    jurisdictions_df = jurisdictions_df.drop_duplicates(subset=["fips_code"], keep="first")
+    rates_df = rates_df.drop_duplicates(subset=["fips_code"], keep="first")
+    zips_df = zips_df.drop_duplicates(subset=["zip_code", "fips_code"], keep="first")
+
+    return jurisdictions_df, rates_df, zips_df
+
+
+# ---------------------------------------------------------------------------
+# State government parser
+# ---------------------------------------------------------------------------
+
+def parse_state_gov(files: list[Path]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Parse state government CSV files.
+
+    State gov CSVs vary widely in format.  This parser attempts the same
+    column-detection heuristics as the Avalara parser.  Files that cannot
+    be parsed are logged and skipped.
+
+    The synthetic FIPS prefix for state_gov local jurisdictions is ``SGV``
+    to distinguish them from Avalara's ``AVL`` prefix.
+    """
+    if not files:
+        return _empty_jurisdictions(), _empty_rates(), _empty_zip_junctions()
+
+    state_abbr_to_fips = _STATE_TO_FIPS
+
+    all_jurisdictions: list[pd.DataFrame] = []
+    all_rates: list[pd.DataFrame] = []
+    all_zips: list[pd.DataFrame] = []
+
+    for path in files:
+        try:
+            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
+        except Exception:
+            logger.warning("Could not read state_gov file %s, skipping", path)
+            continue
+
+        df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
+
+        # Try to detect the state from the filename (e.g., NY_rates.csv).
+        state_abbr = path.stem.upper().split("_")[0]
+
+        zip_col = _find_col(df, ["zipcode", "zip_code", "zip"])
+        state_col = _find_col(df, ["state", "state_abbreviation"])
+        name_col = _find_col(df, ["jurisdiction", "taxregionname", "tax_region_name", "name"])
+
+        rate_col = _find_col(df, [
+            "rate", "combined_rate", "estimatedcombinedrate",
+            "estimated_combined_rate", "total_rate", "salestaxrate",
+        ])
+        state_rate_col = _find_col(df, ["estimatedstaterate", "estimated_state_rate", "state_rate"])
+
+        if not zip_col or not rate_col:
+            logger.warning(
+                "State gov file %s missing ZIP or rate column (found cols: %s), skipping",
+                path, list(df.columns),
+            )
+            continue
+
+        df["_zip"] = df[zip_col].str.strip().str[:5]
+        df = df[df["_zip"].str.len() == 5].copy()
+
+        if state_col:
+            df["_state_fips"] = df[state_col].str.strip().map(state_abbr_to_fips).fillna("")
+        else:
+            df["_state_fips"] = state_abbr_to_fips.get(state_abbr, "")
+
+        if name_col:
+            df["_name"] = df[name_col].str.strip()
+        else:
+            df["_name"] = ""
+
+        df["_rate"] = pd.to_numeric(df[rate_col], errors="coerce").fillna(0)
+
+        # State rates.
+        if state_rate_col:
+            df["_state_rate"] = pd.to_numeric(df[state_rate_col], errors="coerce").fillna(0)
+        else:
+            df["_state_rate"] = 0.0
+
+        # Compute local rate as combined minus state.
+        df["_local_rate"] = (df["_rate"] - df["_state_rate"]).clip(lower=0)
+
+        states_df = df[df["_state_fips"] != ""].drop_duplicates(subset=["_state_fips"])
+        if not states_df.empty:
+            sj = pd.DataFrame({
+                "fips_code": states_df["_state_fips"].values,
+                "name": state_abbr,
+                "type": "state",
+                "state_fips": states_df["_state_fips"].values,
+                "parent_fips": None,
+                "effective_date": _EFFECTIVE_DATE,
+            })
+            all_jurisdictions.append(sj)
+
+            if state_rate_col:
+                sr = pd.DataFrame({
+                    "fips_code": states_df["_state_fips"].values,
+                    "rate": states_df["_state_rate"].values,
+                    "rate_type": "general",
+                    "effective_date": _EFFECTIVE_DATE,
+                    "expiry_date": None,
+                    "source": "state_gov",
+                })
+                all_rates.append(sr)
+
+        # ZIP → state mappings.
+        zs = df[df["_state_fips"] != ""][["_zip", "_state_fips"]].drop_duplicates()
+        if not zs.empty:
+            all_zips.append(pd.DataFrame({
+                "zip_code": zs["_zip"].values,
+                "fips_code": zs["_state_fips"].values,
+                "is_primary": True,
+                "effective_date": _EFFECTIVE_DATE,
+                "expiry_date": None,
+            }))
+
+        # Local rate jurisdictions.
+        local = df[(df["_state_fips"] != "") & (df["_local_rate"] > 0)].copy()
+        local = local.drop_duplicates(subset=["_zip"])
+        if not local.empty:
+            local["_local_fips"] = "SGV" + local["_state_fips"] + local["_zip"]
+
+            all_jurisdictions.append(pd.DataFrame({
+                "fips_code": local["_local_fips"].values,
+                "name": local["_name"].values + " (local)",
+                "type": "county",
+                "state_fips": local["_state_fips"].values,
+                "parent_fips": local["_state_fips"].values,
+                "effective_date": _EFFECTIVE_DATE,
+            }))
+            all_rates.append(pd.DataFrame({
+                "fips_code": local["_local_fips"].values,
+                "rate": local["_local_rate"].values,
+                "rate_type": "general",
+                "effective_date": _EFFECTIVE_DATE,
+                "expiry_date": None,
+                "source": "state_gov",
+            }))
+            all_zips.append(pd.DataFrame({
+                "zip_code": local["_zip"].values,
+                "fips_code": local["_local_fips"].values,
+                "is_primary": True,
+                "effective_date": _EFFECTIVE_DATE,
+                "expiry_date": None,
+            }))
+
+    jurisdictions_df = pd.concat(all_jurisdictions, ignore_index=True) if all_jurisdictions else _empty_jurisdictions()
+    rates_df = pd.concat(all_rates, ignore_index=True) if all_rates else _empty_rates()
+    zips_df = pd.concat(all_zips, ignore_index=True) if all_zips else _empty_zip_junctions()
+
     jurisdictions_df = jurisdictions_df.drop_duplicates(subset=["fips_code"], keep="first")
     rates_df = rates_df.drop_duplicates(subset=["fips_code"], keep="first")
     zips_df = zips_df.drop_duplicates(subset=["zip_code", "fips_code"], keep="first")
@@ -331,10 +515,49 @@ def merge_sources(
 
     When the same fips_code appears in multiple sources, keep the record
     from the source with the highest priority number.
+
+    Additionally, for states covered by SST, Avalara's synthetic local
+    jurisdictions (prefixed ``AVL``) are dropped entirely — SST provides
+    real FIPS-level data for those states.
     """
     all_j, all_r, all_z = [], [], []
 
+    # Determine which states have SST coverage so we can drop redundant
+    # Avalara synthetic jurisdictions for those states.
+    sst_covered_states = set()
+    if "sst" in sources:
+        sst_j = sources["sst"][0]
+        if not sst_j.empty:
+            sst_covered_states = set(sst_j["state_fips"].unique())
+    if not sst_covered_states:
+        sst_covered_states = _SST_STATE_FIPS
+
     for source_name, (j, r, z) in sources.items():
+        # For Avalara, filter out synthetic local jurisdictions for SST states.
+        if source_name == "avalara" and sst_covered_states:
+            before_j = len(j)
+            if not j.empty:
+                j = j.copy()
+                is_synthetic = j["fips_code"].str.startswith("AVL")
+                is_sst_state = j["state_fips"].isin(sst_covered_states)
+                j = j[~(is_synthetic & is_sst_state)]
+            if not r.empty:
+                r = r.copy()
+                # Keep rates only for FIPS codes still in jurisdictions.
+                kept_fips = set(j["fips_code"]) if not j.empty else set()
+                r = r[r["fips_code"].isin(kept_fips) | ~r["fips_code"].str.startswith("AVL")]
+            if not z.empty:
+                z = z.copy()
+                kept_fips_all = set(j["fips_code"]) if not j.empty else set()
+                # Keep state-level ZIP mappings + non-AVL + AVL for non-SST states.
+                z = z[z["fips_code"].isin(kept_fips_all) | ~z["fips_code"].str.startswith("AVL")]
+            after_j = len(j)
+            if before_j != after_j:
+                logger.info(
+                    "Filtered %d Avalara synthetic jurisdictions for SST-covered states",
+                    before_j - after_j,
+                )
+
         if not j.empty:
             j = j.copy()
             j["_priority"] = priority.get(source_name, 0)
@@ -399,8 +622,8 @@ def _safe_float(val) -> float:
         return 0.0
 
 
-# State abbreviation → FIPS code mapping.
-_STATE_FIPS: dict[str, str] = {
+# FIPS code → state abbreviation mapping.
+_FIPS_TO_STATE: dict[str, str] = {
     "01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA",
     "08": "CO", "09": "CT", "10": "DE", "11": "DC", "12": "FL",
     "13": "GA", "15": "HI", "16": "ID", "17": "IL", "18": "IN",
@@ -413,3 +636,6 @@ _STATE_FIPS: dict[str, str] = {
     "50": "VT", "51": "VA", "53": "WA", "54": "WV", "55": "WI",
     "56": "WY",
 }
+
+# Reverse lookup: state abbreviation → FIPS code.
+_STATE_TO_FIPS: dict[str, str] = {v: k for k, v in _FIPS_TO_STATE.items()}

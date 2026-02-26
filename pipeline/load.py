@@ -11,9 +11,7 @@ The pipeline NEVER writes directly to production tables.
 import logging
 from datetime import date
 
-import pandas as pd
 import psycopg2
-from psycopg2 import sql
 from psycopg2.extras import execute_values
 
 from config import DATABASE_URL, pipeline_run_id
@@ -192,9 +190,8 @@ def promote() -> dict:
 # Staging insert helpers
 # ---------------------------------------------------------------------------
 
-def _insert_jurisdictions_staging(cur, df: pd.DataFrame) -> None:
+def _insert_jurisdictions_staging(cur, df) -> None:
     """Bulk insert jurisdictions into staging."""
-    cols = ["fips_code", "name", "type", "state_fips", "parent_fips", "effective_date"]
     values = [
         (
             row["fips_code"],
@@ -224,7 +221,7 @@ def _insert_jurisdictions_staging(cur, df: pd.DataFrame) -> None:
     logger.info("Inserted %d jurisdictions into staging", len(values))
 
 
-def _insert_rates_staging(cur, df: pd.DataFrame) -> None:
+def _insert_rates_staging(cur, df) -> None:
     """Bulk insert rates into staging."""
     values = [
         (
@@ -249,7 +246,7 @@ def _insert_rates_staging(cur, df: pd.DataFrame) -> None:
     logger.info("Inserted %d rates into staging", len(values))
 
 
-def _insert_zip_staging(cur, df: pd.DataFrame) -> None:
+def _insert_zip_staging(cur, df) -> None:
     """Bulk insert ZIP-to-jurisdiction mappings into staging."""
     values = [
         (

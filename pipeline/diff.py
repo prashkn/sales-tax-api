@@ -46,6 +46,14 @@ def generate_diff_report(
     # Try to load current production data.
     try:
         conn = psycopg2.connect(DATABASE_URL)
+    except Exception as exc:
+        _write(f"[!] Could not connect to production database: {exc}")
+        _write("    Cannot generate diff — showing new data summary only.")
+        _write()
+        _write_new_data_summary(buf, new_jurisdictions, new_rates, new_zips)
+        return _finalize(buf)
+
+    try:
         cur_jurisdictions = pd.read_sql("SELECT * FROM jurisdictions", conn)
         cur_rates = pd.read_sql(
             "SELECT fips_code, rate, rate_type, source FROM rates "
@@ -56,13 +64,14 @@ def generate_diff_report(
             "SELECT zip_code, fips_code FROM zip_to_jurisdictions WHERE expiry_date IS NULL",
             conn,
         )
-        conn.close()
-    except (psycopg2.OperationalError, Exception) as exc:
-        _write(f"[!] Could not connect to production database: {exc}")
+    except Exception as exc:
+        _write(f"[!] Could not read production data: {exc}")
         _write("    Cannot generate diff — showing new data summary only.")
         _write()
         _write_new_data_summary(buf, new_jurisdictions, new_rates, new_zips)
         return _finalize(buf)
+    finally:
+        conn.close()
 
     # --- Jurisdictions diff ---
     _write("JURISDICTIONS")
