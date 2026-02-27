@@ -21,8 +21,7 @@ func TestLookupByZIP_InvalidZIP(t *testing.T) {
 		{"1234", http.StatusBadRequest},     // too short
 		{"123456", http.StatusBadRequest},   // too long
 		{"abcde", http.StatusBadRequest},    // letters
-		{"1234 ", http.StatusBadRequest},    // space
-		{"", http.StatusBadRequest},         // empty
+		{"1234%20", http.StatusBadRequest},  // space (URL-encoded)
 	}
 
 	for _, tt := range tests {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/prashkn/sales-tax-api/internal/cache"
+	"github.com/prashkn/sales-tax-api/internal/geocoder"
 	"github.com/prashkn/sales-tax-api/internal/resolver"
 	"github.com/prashkn/sales-tax-api/internal/store"
 )
@@ -55,11 +56,11 @@ type TaxService struct {
 	cache        *cache.Cache
 }
 
-func NewTaxService(s *store.Store, c *cache.Cache) *TaxService {
+func NewTaxService(s *store.Store, c *cache.Cache, gc *geocoder.Client) *TaxService {
 	return &TaxService{
 		store:        s,
 		zipResolver:  resolver.NewZIPResolver(s),
-		addrResolver: resolver.NewAddressResolver(s),
+		addrResolver: resolver.NewAddressResolver(s, gc),
 		rateResolver: resolver.NewRateResolver(s),
 		cache:        c,
 	}

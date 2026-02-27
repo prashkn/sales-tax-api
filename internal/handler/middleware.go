@@ -28,6 +28,9 @@ func APIKeyAuth(validator *apikey.Validator, rapidAPISecret string) func(http.Ha
 			}
 
 			// RapidAPI requests: validate the proxy secret header.
+			// If valid, skip the normal key validator — authentication
+			// is handled entirely by the proxy secret match.
+			rapidAPIValidated := false
 			if proxySecret := r.Header.Get("X-RapidAPI-Proxy-Secret"); proxySecret != "" {
 				if rapidAPISecret == "" || proxySecret != rapidAPISecret {
 					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid rapidapi proxy secret"})
@@ -39,6 +42,7 @@ func APIKeyAuth(validator *apikey.Validator, rapidAPISecret string) func(http.Ha
 				} else {
 					key = "rapid:" + proxySecret[:16]
 				}
+				rapidAPIValidated = true
 			}
 
 			if key == "" {
@@ -46,9 +50,11 @@ func APIKeyAuth(validator *apikey.Validator, rapidAPISecret string) func(http.Ha
 				return
 			}
 
-			if err := validator.Validate(key); err != nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid api key"})
-				return
+			if !rapidAPIValidated {
+				if err := validator.Validate(key); err != nil {
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid api key"})
+					return
+				}
 			}
 
 			// Store key in context for downstream middleware.

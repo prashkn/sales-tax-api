@@ -15,6 +15,7 @@ import (
 	"github.com/prashkn/sales-tax-api/internal/apikey"
 	"github.com/prashkn/sales-tax-api/internal/cache"
 	"github.com/prashkn/sales-tax-api/internal/config"
+	"github.com/prashkn/sales-tax-api/internal/geocoder"
 	"github.com/prashkn/sales-tax-api/internal/handler"
 	"github.com/prashkn/sales-tax-api/internal/service"
 	"github.com/prashkn/sales-tax-api/internal/store"
@@ -46,8 +47,11 @@ func main() {
 	}
 	defer rdb.Close()
 
+	// Geocoder
+	gc := geocoder.NewClient()
+
 	// Services
-	taxService := service.NewTaxService(db, rdb)
+	taxService := service.NewTaxService(db, rdb, gc)
 
 	// Handlers
 	taxHandler := handler.NewTaxHandler(taxService)

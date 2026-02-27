@@ -55,6 +55,31 @@ func (s *Store) GetJurisdictionsByZIP(ctx context.Context, zip string) ([]Jurisd
 	return jurisdictions, rows.Err()
 }
 
+// GetJurisdictionsByFIPSCodes returns jurisdictions matching the given FIPS
+// codes, plus any special districts that are children of the matched codes.
+func (s *Store) GetJurisdictionsByFIPSCodes(ctx context.Context, fipsCodes []string) ([]Jurisdiction, error) {
+	query, args, err := jurisdictionsWithChildrenQuery(fipsCodes).ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("building query: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying jurisdictions by fips: %w", err)
+	}
+	defer rows.Close()
+
+	var jurisdictions []Jurisdiction
+	for rows.Next() {
+		var j Jurisdiction
+		if err := rows.Scan(&j.FIPSCode, &j.Name, &j.Type, &j.StateFIPS, &j.ParentFIPS, &j.EffectiveDate); err != nil {
+			return nil, fmt.Errorf("scanning jurisdiction: %w", err)
+		}
+		jurisdictions = append(jurisdictions, j)
+	}
+	return jurisdictions, rows.Err()
+}
+
 func (s *Store) GetRateByFIPS(ctx context.Context, fipsCode string) (*Rate, error) {
 	query, args, err := rateByFIPSQuery(fipsCode).ToSql()
 	if err != nil {
