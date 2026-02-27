@@ -8,6 +8,8 @@ Two distinct operations:
 The pipeline NEVER writes directly to production tables.
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import date
 
