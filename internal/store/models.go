@@ -28,3 +28,9 @@ type ZIPJurisdiction struct {
 	EffectiveDate time.Time `json:"effective_date"`
 	ExpiryDate    *time.Time `json:"expiry_date,omitempty"`
 }
+
+// DataFreshness holds the age of the most recently updated data.
+type DataFreshness struct {
+	LastUpdated time.Time
+	RecordCount int
+}

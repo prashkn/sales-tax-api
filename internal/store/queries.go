@@ -35,8 +35,8 @@ func ratesByFIPSCodesQuery(fipsCodes []string) sq.SelectBuilder {
 		OrderBy("fips_code", "effective_date DESC")
 }
 
-// func dataFreshnessQuery() sq.SelectBuilder {
-// 	return psql.
-// 		Select("MAX(updated_at)").
-// 		From("jurisdictions")
-// }
+func dataFreshnessQuery() sq.SelectBuilder {
+	return psql.
+		Select("COALESCE(MAX(updated_at), NOW())", "COUNT(*)").
+		From("jurisdictions")
+}

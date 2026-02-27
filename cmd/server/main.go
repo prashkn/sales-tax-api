@@ -51,7 +51,7 @@ func main() {
 
 	// Handlers
 	taxHandler := handler.NewTaxHandler(taxService)
-	healthHandler := handler.NewHealthHandler(db, rdb)
+	healthHandler := handler.NewHealthHandler(db, rdb, taxService)
 	keyValidator := apikey.NewValidator(cfg.APIKeySecret)
 
 	// Router
@@ -65,7 +65,7 @@ func main() {
 
 	// Authenticated + rate-limited
 	r.Group(func(r chi.Router) {
-		r.Use(handler.APIKeyAuth(keyValidator))
+		r.Use(handler.APIKeyAuth(keyValidator, cfg.RapidAPISecret))
 		r.Use(handler.RateLimiter(cfg.RateLimitRPS))
 
 		r.Get("/v1/tax/zip/{zip_code}", taxHandler.LookupByZIP)

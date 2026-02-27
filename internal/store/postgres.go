@@ -71,6 +71,20 @@ func (s *Store) GetRateByFIPS(ctx context.Context, fipsCode string) (*Rate, erro
 	return &r, nil
 }
 
+func (s *Store) GetDataFreshness(ctx context.Context) (*DataFreshness, error) {
+	query, args, err := dataFreshnessQuery().ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("building query: %w", err)
+	}
+
+	var df DataFreshness
+	err = s.pool.QueryRow(ctx, query, args...).Scan(&df.LastUpdated, &df.RecordCount)
+	if err != nil {
+		return nil, fmt.Errorf("querying data freshness: %w", err)
+	}
+	return &df, nil
+}
+
 func (s *Store) GetRatesByFIPSCodes(ctx context.Context, fipsCodes []string) ([]Rate, error) {
 	query, args, err := ratesByFIPSCodesQuery(fipsCodes).ToSql()
 	if err != nil {

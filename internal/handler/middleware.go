@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -10,16 +11,34 @@ import (
 	"github.com/prashkn/sales-tax-api/internal/apikey"
 )
 
-func APIKeyAuth(validator *apikey.Validator) func(http.Handler) http.Handler {
+type contextKey string
+
+const apiKeyContextKey contextKey = "api_key"
+
+// APIKeyAuth validates the API key from request headers and stores it in
+// the request context for downstream middleware (e.g., rate limiter).
+func APIKeyAuth(validator *apikey.Validator, rapidAPISecret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get("X-API-Key")
 			if key == "" {
-				key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+					key = strings.TrimPrefix(auth, "Bearer ")
+				}
 			}
-			// Also accept RapidAPI proxy header.
-			if rapidKey := r.Header.Get("X-RapidAPI-Proxy-Secret"); rapidKey != "" {
-				key = rapidKey
+
+			// RapidAPI requests: validate the proxy secret header.
+			if proxySecret := r.Header.Get("X-RapidAPI-Proxy-Secret"); proxySecret != "" {
+				if rapidAPISecret == "" || proxySecret != rapidAPISecret {
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid rapidapi proxy secret"})
+					return
+				}
+				// Use the RapidAPI user's subscription key for identity.
+				if rapidUser := r.Header.Get("X-RapidAPI-User"); rapidUser != "" {
+					key = "rapid:" + rapidUser
+				} else {
+					key = "rapid:" + proxySecret[:16]
+				}
 			}
 
 			if key == "" {
@@ -32,7 +51,9 @@ func APIKeyAuth(validator *apikey.Validator) func(http.Handler) http.Handler {
 				return
 			}
 
-			next.ServeHTTP(w, r)
+			// Store key in context for downstream middleware.
+			ctx := context.WithValue(r.Context(), apiKeyContextKey, key)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -64,7 +85,8 @@ func RateLimiter(rps int) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := r.Header.Get("X-API-Key")
+			// Prefer API key identity set by auth middleware.
+			key, _ := r.Context().Value(apiKeyContextKey).(string)
 			if key == "" {
 				key = r.RemoteAddr
 			}
