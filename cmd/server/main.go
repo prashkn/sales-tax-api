@@ -63,9 +63,10 @@ func main() {
 	// Public
 	r.Get("/v1/health", healthHandler.Health)
 
-	// Authenticated
+	// Authenticated + rate-limited
 	r.Group(func(r chi.Router) {
 		r.Use(handler.APIKeyAuth(keyValidator))
+		r.Use(handler.RateLimiter(cfg.RateLimitRPS))
 
 		r.Get("/v1/tax/zip/{zip_code}", taxHandler.LookupByZIP)
 		r.Get("/v1/tax/address", taxHandler.LookupByAddress)
