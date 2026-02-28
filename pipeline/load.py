@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
+import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 

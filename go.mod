@@ -1,6 +1,8 @@
 module github.com/prashkn/sales-tax-api
 
-go 1.24.7
+go 1.24.0
+
+toolchain go1.24.7
 
 require (
 	github.com/Masterminds/squirrel v1.5.4
