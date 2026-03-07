@@ -1,0 +1,77 @@
+name: Data Pipeline
+
+on:
+  # Quarterly schedule: 9am UTC on the 1st of Jan, Apr, Jul, Oct
+  schedule:
+    - cron: "0 9 1 1,4,7,10 *"
+  workflow_dispatch:
+
+jobs:
+  download-parse-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r pipeline/requirements.txt
+
+      - name: Download source data
+        working-directory: pipeline
+        run: python run.py --stage download
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Parse data
+        working-directory: pipeline
+        run: python run.py --stage parse
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Validate data
+        working-directory: pipeline
+        run: python run.py --stage validate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Generate diff report
+        working-directory: pipeline
+        run: python run.py --stage diff
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Upload diff report
+        uses: actions/upload-artifact@v4
+        with:
+          name: diff-report-${{ github.run_id }}
+          path: pipeline/reports/
+          retention-days: 90
+
+      - name: Load to staging tables
+        working-directory: pipeline
+        run: python run.py --stage load
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+  promote:
+    needs: download-parse-validate
+    runs-on: ubuntu-latest
+    environment: production  # requires manual approval
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r pipeline/requirements.txt
+
+      - name: Promote staging to production
+        working-directory: pipeline
+        run: python run.py --stage promote --confirm
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

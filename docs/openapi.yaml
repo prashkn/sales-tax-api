@@ -1,0 +1,383 @@
+openapi: "3.0.3"
+info:
+  title: US Sales Tax Rate Lookup API
+  version: "1.0.0"
+  description: |
+    Returns accurate, jurisdiction-level sales tax rates for any US ZIP code
+    or street address. Provides rate breakdowns by state, county, city, and
+    special district.
+
+    **This is not tax advice.** Every response includes a disclaimer. We
+    provide rate lookups only — no filing, no exemption handling, no nexus
+    determination.
+  contact:
+    url: https://github.com/prashkn/sales-tax-api
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://sales-tax-api.fly.dev
+    description: Production
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - ApiKeyHeader: []
+  - BearerAuth: []
+
+paths:
+  /v1/health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      description: Returns API status, database connectivity, and Redis connectivity.
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          description: All systems healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: One or more systems unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /v1/tax/zip/{zip_code}:
+    get:
+      operationId: lookupByZip
+      summary: Tax rate by ZIP code
+      description: |
+        Returns all tax jurisdictions and rates for a 5-digit US ZIP code.
+        A single ZIP can span multiple jurisdictions, so the response may
+        contain multiple rate breakdowns.
+      tags: [Tax Rates]
+      parameters:
+        - name: zip_code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{5}$'
+          example: "90210"
+      responses:
+        "200":
+          description: Tax rate data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaxResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/tax/address:
+    get:
+      operationId: lookupByAddress
+      summary: Tax rate by street address
+      description: |
+        Returns a precise tax rate by resolving a street address to an exact
+        jurisdiction. Requires at minimum the `zip` parameter; `street`,
+        `city`, and `state` improve precision.
+      tags: [Tax Rates]
+      parameters:
+        - name: street
+          in: query
+          schema:
+            type: string
+          example: "123 Main St"
+        - name: city
+          in: query
+          schema:
+            type: string
+          example: "Beverly Hills"
+        - name: state
+          in: query
+          schema:
+            type: string
+          example: "CA"
+        - name: zip
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{5}$'
+          example: "90210"
+      responses:
+        "200":
+          description: Tax rate data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaxResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/tax/calculate:
+    post:
+      operationId: calculateTax
+      summary: Calculate tax for an amount
+      description: |
+        Returns the tax amount and total for a given ZIP code and pre-tax
+        amount. Convenience endpoint that wraps the ZIP lookup.
+      tags: [Tax Rates]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CalculateRequest"
+      responses:
+        "200":
+          description: Calculated tax
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalculateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/tax/bulk:
+    post:
+      operationId: bulkLookup
+      summary: Bulk ZIP code lookup
+      description: |
+        Returns tax rates for up to 100 ZIP codes in a single request.
+        Available on paid tiers only.
+      tags: [Tax Rates]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkRequest"
+      responses:
+        "200":
+          description: Bulk results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+components:
+  securitySchemes:
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No data found for the given input
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds to wait before retrying
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: "invalid zip code, must be 5 digits"
+
+    Meta:
+      type: object
+      properties:
+        last_updated:
+          type: string
+          format: date
+          example: "2026-01-15"
+        data_version:
+          type: string
+          example: "2026-Q1"
+        disclaimer:
+          type: string
+          example: "For informational purposes only. Not tax advice. Verify with local tax authorities."
+
+    RateBreakdown:
+      type: object
+      properties:
+        state:
+          type: number
+          format: double
+          example: 0.0725
+        county:
+          type: number
+          format: double
+          example: 0.0100
+        city:
+          type: number
+          format: double
+          example: 0.0125
+        special:
+          type: number
+          format: double
+          example: 0.0000
+
+    JurisdictionRate:
+      type: object
+      properties:
+        fips_code:
+          type: string
+          example: "0603744000"
+        name:
+          type: string
+          example: "Beverly Hills"
+        type:
+          type: string
+          enum: [state, county, city, special_district]
+        rate:
+          type: number
+          format: double
+          example: 0.0125
+
+    TaxResponse:
+      type: object
+      properties:
+        zip_code:
+          type: string
+          example: "90210"
+        combined_rate:
+          type: number
+          format: double
+          example: 0.0950
+        breakdown:
+          $ref: "#/components/schemas/RateBreakdown"
+        jurisdictions:
+          type: array
+          items:
+            $ref: "#/components/schemas/JurisdictionRate"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    CalculateRequest:
+      type: object
+      required: [zip_code, amount]
+      properties:
+        zip_code:
+          type: string
+          pattern: '^\d{5}$'
+          example: "90210"
+        amount:
+          type: number
+          format: double
+          minimum: 0
+          exclusiveMinimum: true
+          example: 100.00
+
+    CalculateResponse:
+      type: object
+      properties:
+        zip_code:
+          type: string
+          example: "90210"
+        amount:
+          type: number
+          format: double
+          example: 100.00
+        tax_rate:
+          type: number
+          format: double
+          example: 0.0950
+        tax_amount:
+          type: number
+          format: double
+          example: 9.50
+        total:
+          type: number
+          format: double
+          example: 109.50
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    BulkRequest:
+      type: object
+      required: [zip_codes]
+      properties:
+        zip_codes:
+          type: array
+          items:
+            type: string
+            pattern: '^\d{5}$'
+          minItems: 1
+          maxItems: 100
+          example: ["90210", "10001", "60601"]
+
+    BulkResponse:
+      type: object
+      properties:
+        results:
+          type: object
+          additionalProperties:
+            oneOf:
+              - $ref: "#/components/schemas/TaxResponse"
+              - $ref: "#/components/schemas/Error"
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "healthy"
+        database:
+          type: string
+          example: "ok"
+        redis:
+          type: string
+          example: "ok"

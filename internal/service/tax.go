@@ -3,18 +3,20 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/prashkn/sales-tax-api/internal/cache"
+	"github.com/prashkn/sales-tax-api/internal/geocoder"
 	"github.com/prashkn/sales-tax-api/internal/resolver"
 	"github.com/prashkn/sales-tax-api/internal/store"
 )
 
 type TaxResponse struct {
-	ZIPCode      string              `json:"zip_code"`
-	CombinedRate float64             `json:"combined_rate"`
-	Breakdown    RateBreakdown       `json:"breakdown"`
+	ZIPCode       string             `json:"zip_code"`
+	CombinedRate  float64            `json:"combined_rate"`
+	Breakdown     RateBreakdown      `json:"breakdown"`
 	Jurisdictions []JurisdictionRate `json:"jurisdictions"`
-	Meta         Meta                `json:"meta"`
+	Meta          Meta               `json:"meta"`
 }
 
 type RateBreakdown struct {
@@ -38,25 +40,27 @@ type Meta struct {
 }
 
 type CalculateResponse struct {
-	ZIPCode      string  `json:"zip_code"`
-	Amount       float64 `json:"amount"`
-	TaxRate      float64 `json:"tax_rate"`
-	TaxAmount    float64 `json:"tax_amount"`
-	Total        float64 `json:"total"`
-	Meta         Meta    `json:"meta"`
+	ZIPCode   string  `json:"zip_code"`
+	Amount    float64 `json:"amount"`
+	TaxRate   float64 `json:"tax_rate"`
+	TaxAmount float64 `json:"tax_amount"`
+	Total     float64 `json:"total"`
+	Meta      Meta    `json:"meta"`
 }
 
 type TaxService struct {
+	store        *store.Store
 	zipResolver  *resolver.ZIPResolver
 	addrResolver *resolver.AddressResolver
 	rateResolver *resolver.RateResolver
 	cache        *cache.Cache
 }
 
-func NewTaxService(s *store.Store, c *cache.Cache) *TaxService {
+func NewTaxService(s *store.Store, c *cache.Cache, gc *geocoder.Client) *TaxService {
 	return &TaxService{
+		store:        s,
 		zipResolver:  resolver.NewZIPResolver(s),
-		addrResolver: resolver.NewAddressResolver(s),
+		addrResolver: resolver.NewAddressResolver(s, gc),
 		rateResolver: resolver.NewRateResolver(s),
 		cache:        c,
 	}
@@ -115,12 +119,15 @@ func (ts *TaxService) Calculate(ctx context.Context, zipCode string, amount floa
 	}, nil
 }
 
+// GetDataFreshness returns freshness info for use by the health endpoint.
+func (ts *TaxService) GetDataFreshness(ctx context.Context) (*store.DataFreshness, error) {
+	return ts.store.GetDataFreshness(ctx)
+}
+
 func (ts *TaxService) buildResponse(ctx context.Context, zipCode string, jurisdictions []store.Jurisdiction) (*TaxResponse, error) {
 	resp := &TaxResponse{
 		ZIPCode: zipCode,
-		Meta: Meta{
-			Disclaimer: "For informational purposes only. Not tax advice. Verify with local tax authorities.",
-		},
+		Meta:    ts.buildMeta(ctx),
 	}
 
 	for _, j := range jurisdictions {
@@ -151,4 +158,22 @@ func (ts *TaxService) buildResponse(ctx context.Context, zipCode string, jurisdi
 
 	resp.CombinedRate = resp.Breakdown.State + resp.Breakdown.County + resp.Breakdown.City + resp.Breakdown.Special
 	return resp, nil
+}
+
+func (ts *TaxService) buildMeta(ctx context.Context) Meta {
+	m := Meta{
+		Disclaimer: "For informational purposes only. Not tax advice. Verify with local tax authorities.",
+	}
+
+	df, err := ts.store.GetDataFreshness(ctx)
+	if err != nil {
+		return m
+	}
+
+	m.LastUpdated = df.LastUpdated.Format(time.DateOnly)
+	// Derive quarter from the data's last-updated date.
+	q := (df.LastUpdated.Month()-1)/3 + 1
+	m.DataVersion = fmt.Sprintf("%d-Q%d", df.LastUpdated.Year(), q)
+
+	return m
 }

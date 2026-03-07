@@ -35,8 +35,25 @@ func ratesByFIPSCodesQuery(fipsCodes []string) sq.SelectBuilder {
 		OrderBy("fips_code", "effective_date DESC")
 }
 
-// func dataFreshnessQuery() sq.SelectBuilder {
-// 	return psql.
-// 		Select("MAX(updated_at)").
-// 		From("jurisdictions")
-// }
+// jurisdictionsWithChildrenQuery returns jurisdictions matching the given FIPS
+// codes plus any special_district children whose parent_fips matches one of
+// the given codes (so geocoded lookups pick up special districts too).
+func jurisdictionsWithChildrenQuery(fipsCodes []string) sq.SelectBuilder {
+	return psql.
+		Select("fips_code", "name", "type", "state_fips", "parent_fips", "effective_date").
+		From("jurisdictions").
+		Where(sq.Or{
+			sq.Eq{"fips_code": fipsCodes},
+			sq.And{
+				sq.Eq{"type": "special_district"},
+				sq.Eq{"parent_fips": fipsCodes},
+			},
+		}).
+		OrderBy("type")
+}
+
+func dataFreshnessQuery() sq.SelectBuilder {
+	return psql.
+		Select("COALESCE(MAX(updated_at), NOW())", "COUNT(*)").
+		From("jurisdictions")
+}

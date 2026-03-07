@@ -7,15 +7,16 @@ import (
 )
 
 type Config struct {
-	Port         string
-	DatabaseURL  string
-	RedisURL     string
-	SentryDSN    string
-	APIKeySecret string
-	RateLimitRPS int
-	CacheTTLHrs  int
-	LogLevel     string
-	Environment  string
+	Port              string
+	DatabaseURL       string
+	RedisURL          string
+	SentryDSN         string
+	APIKeySecret      string
+	RapidAPISecret    string
+	RateLimitRPS      int
+	CacheTTLHrs       int
+	LogLevel          string
+	Environment       string
 }
 
 func Load() (*Config, error) {
@@ -24,7 +25,8 @@ func Load() (*Config, error) {
 		DatabaseURL:  os.Getenv("DATABASE_URL"),
 		RedisURL:     os.Getenv("REDIS_URL"),
 		SentryDSN:    os.Getenv("SENTRY_DSN"),
-		APIKeySecret: os.Getenv("API_KEY_SECRET"),
+		APIKeySecret:   os.Getenv("API_KEY_SECRET"),
+		RapidAPISecret: os.Getenv("RAPIDAPI_PROXY_SECRET"),
 		RateLimitRPS: envOrInt("RATE_LIMIT_RPS", 10),
 		CacheTTLHrs:  envOrInt("CACHE_TTL_HOURS", 24),
 		LogLevel:     envOr("LOG_LEVEL", "info"),
